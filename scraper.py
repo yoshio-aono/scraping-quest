@@ -7,6 +7,9 @@ import csv
 import time
 import re
 from urllib.parse import urljoin
+import os
+from dotenv import load_dotenv
+from supabase import create_client
 
 def get_page(url):
     """指定したURLのHTMLを取得する"""
@@ -103,6 +106,39 @@ def get_all_books():
 
     return all_books
 
+def save_to_supabase(books):
+    """書籍データをSupabaseのbooksテーブルにupsertする"""
+    load_dotenv()
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+
+    if not url or not key:
+        print("⚠ SUPABASE_URL / SUPABASE_KEY が未設定です。.envを確認してください。")
+        return
+
+    client = create_client(url, key)
+
+    # upsertはUPCをユニークキーとして重複防止
+    records = [
+        {
+            "title":       b["title"],
+            "price":       b["price"],
+            "rating":      b["rating"],
+            "upc":         b["upc"],
+            "stock":       b["stock"],
+            "description": b["description"],
+        }
+        for b in books
+    ]
+
+    BATCH = 100
+    for i in range(0, len(records), BATCH):
+        batch = records[i : i + BATCH]
+        client.table("books").upsert(batch, on_conflict="upc").execute()
+        print(f"  upsert完了: {i + len(batch)}/{len(records)}件")
+
+    print(f"\nSupabaseへの保存が完了しました！（合計{len(records)}件）")
+
 def save_to_csv(books, filename="books.csv"):
     """書籍データをCSVファイルに保存する"""
     fieldnames = ["title", "price", "rating", "upc", "stock", "description"]
@@ -116,6 +152,7 @@ def main():
     print("全ページのスクレイピングを開始します...")
     all_books = get_all_books()
     save_to_csv(all_books)
+    save_to_supabase(all_books)
     print(f"\n完了！合計 {len(all_books)} 冊取得しました。")
 
 if __name__ == "__main__":
