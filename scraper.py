@@ -1,3 +1,6 @@
+import sys
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import requests
 from bs4 import BeautifulSoup
 import csv
