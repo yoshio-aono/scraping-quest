@@ -8,15 +8,25 @@ import time
 import re
 from urllib.parse import urljoin
 import os
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from supabase import create_client
 
-def get_page(url):
-    """指定したURLのHTMLを取得する"""
-    response = requests.get(url)
-    response.encoding = "utf-8"
-    print(f"ステータスコード: {response.status_code} → {url}")
-    return response.text
+def get_page(url, retries=5, wait=10):
+    """指定したURLのHTMLを取得する（失敗時はリトライ）"""
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(url, timeout=30)
+            response.encoding = "utf-8"
+            print(f"ステータスコード: {response.status_code} → {url}")
+            return response.text
+        except requests.exceptions.ConnectionError as e:
+            print(f"  ⚠ 接続エラー（{attempt}/{retries}回目）: {e}")
+            if attempt < retries:
+                print(f"  {wait}秒後にリトライします...")
+                time.sleep(wait)
+            else:
+                raise
 
 def extract_books(html, base_url):
     """HTMLから書籍データと詳細ページURLを抽出する"""
@@ -107,7 +117,7 @@ def get_all_books():
     return all_books
 
 def save_to_supabase(books):
-    """書籍データをSupabaseのbooksテーブルにupsertする"""
+    """差分比較してSupabaseのbooksテーブルを差分upsertする"""
     load_dotenv()
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
@@ -118,26 +128,67 @@ def save_to_supabase(books):
 
     client = create_client(url, key)
 
-    # upsertはUPCをユニークキーとして重複防止
-    records = [
-        {
+    # 既存データをSupabaseから全件取得（UPCをキーにdict化）
+    print("\n--- Supabaseから既存データを取得中 ---")
+    existing = {}
+    LIMIT = 1000
+    offset = 0
+    while True:
+        res = (client.table("books")
+               .select("upc,title,price,rating,stock,description")
+               .range(offset, offset + LIMIT - 1)
+               .execute())
+        for row in res.data:
+            existing[row["upc"]] = row
+        if len(res.data) < LIMIT:
+            break
+        offset += LIMIT
+    print(f"既存データ: {len(existing)}件")
+
+    # 差分分類
+    now = datetime.now(timezone.utc).isoformat()
+    new_books     = []
+    updated_books = []
+    unchanged     = 0
+
+    for b in books:
+        record = {
             "title":       b["title"],
             "price":       b["price"],
             "rating":      b["rating"],
             "upc":         b["upc"],
             "stock":       b["stock"],
             "description": b["description"],
+            "scraped_at":  now,
         }
-        for b in books
-    ]
+        if b["upc"] not in existing:
+            new_books.append(record)
+        else:
+            ex = existing[b["upc"]]
+            changed = (
+                b["title"]       != ex["title"]                  or
+                float(b["price"])!= float(ex["price"])           or
+                int(b["rating"]) != int(ex["rating"])            or
+                int(b["stock"])  != int(ex["stock"])             or
+                b["description"] != ex["description"]
+            )
+            if changed:
+                updated_books.append(record)
+            else:
+                unchanged += 1
 
-    BATCH = 100
-    for i in range(0, len(records), BATCH):
-        batch = records[i : i + BATCH]
-        client.table("books").upsert(batch, on_conflict="upc").execute()
-        print(f"  upsert完了: {i + len(batch)}/{len(records)}件")
+    # 新規・更新分だけupsert
+    to_upsert = new_books + updated_books
+    if to_upsert:
+        BATCH = 100
+        for i in range(0, len(to_upsert), BATCH):
+            batch = to_upsert[i : i + BATCH]
+            client.table("books").upsert(batch, on_conflict="upc").execute()
+            print(f"  upsert完了: {min(i + BATCH, len(to_upsert))}/{len(to_upsert)}件")
+    else:
+        print("  差分なし。Supabaseの更新はスキップしました。")
 
-    print(f"\nSupabaseへの保存が完了しました！（合計{len(records)}件）")
+    print(f"\n新規{len(new_books)}件・更新{len(updated_books)}件・変更なし{unchanged}件")
 
 def save_to_csv(books, filename="books.csv"):
     """書籍データをCSVファイルに保存する"""
