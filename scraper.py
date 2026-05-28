@@ -88,27 +88,46 @@ def get_next_url(html, base_url):
         return urljoin(base_url, next_btn["href"])
     return None
 
+def get_categories(html):
+    """サイドバーからサブカテゴリ一覧を取得する（ルートのBooksは除外）"""
+    soup = BeautifulSoup(html, "html.parser")
+    categories = []
+    for a in soup.select("ul.nav-list ul a"):
+        name = a.text.strip()
+        url  = urljoin("http://books.toscrape.com/", a["href"])
+        categories.append({"name": name, "url": url})
+    return categories
+
 def get_all_books():
-    """全ページをループして全書籍を取得する（詳細ページも含む）"""
-    url = "http://books.toscrape.com/"
+    """カテゴリ別に全書籍を取得する（詳細ページも含む）"""
+    top_url  = "http://books.toscrape.com/"
+    top_html = get_page(top_url)
+    categories = get_categories(top_html)
+    print(f"\n取得カテゴリ数: {len(categories)}件")
+
     all_books = []
-    page = 1
 
-    while url:
-        print(f"\n--- ページ {page} を取得中 ---")
-        html = get_page(url)
-        books = extract_books(html, url)
-        all_books.extend(books)
-        print(f"このページ: {len(books)}冊 / 累計: {len(all_books)}冊")
+    for cat_i, cat in enumerate(categories, 1):
+        print(f"\n=== [{cat_i}/{len(categories)}] {cat['name']} ===")
+        url  = cat["url"]
+        page = 1
 
-        url = get_next_url(html, url)
-        page += 1
-        time.sleep(1)
+        while url:
+            print(f"  ページ {page} を取得中...")
+            html  = get_page(url)
+            books = extract_books(html, url)
+            for book in books:
+                book["category"] = cat["name"]
+            all_books.extend(books)
+            print(f"  このページ: {len(books)}冊 / 累計: {len(all_books)}冊")
+            url = get_next_url(html, url)
+            page += 1
+            time.sleep(1)
 
     # 各書籍の詳細ページを取得
     print(f"\n--- 詳細ページを取得中（合計{len(all_books)}冊）---")
     for i, book in enumerate(all_books, 1):
-        print(f"[{i}/{len(all_books)}] {book['title'][:50]}")
+        print(f"[{i}/{len(all_books)}] [{book['category']}] {book['title'][:40]}")
         detail = get_book_detail(book["detail_url"])
         book.update(detail)
         del book["detail_url"]
@@ -135,7 +154,7 @@ def save_to_supabase(books):
     offset = 0
     while True:
         res = (client.table("books")
-               .select("upc,title,price,rating,stock,description")
+               .select("upc,title,price,rating,stock,description,category")
                .range(offset, offset + LIMIT - 1)
                .execute())
         for row in res.data:
@@ -159,6 +178,7 @@ def save_to_supabase(books):
             "upc":         b["upc"],
             "stock":       b["stock"],
             "description": b["description"],
+            "category":    b["category"],
             "scraped_at":  now,
         }
         if b["upc"] not in existing:
@@ -170,7 +190,8 @@ def save_to_supabase(books):
                 float(b["price"])!= float(ex["price"])           or
                 int(b["rating"]) != int(ex["rating"])            or
                 int(b["stock"])  != int(ex["stock"])             or
-                b["description"] != ex["description"]
+                b["description"] != ex["description"]            or
+                b["category"]    != ex.get("category", "")
             )
             if changed:
                 updated_books.append(record)
@@ -192,7 +213,7 @@ def save_to_supabase(books):
 
 def save_to_csv(books, filename="books.csv"):
     """書籍データをCSVファイルに保存する"""
-    fieldnames = ["title", "price", "rating", "upc", "stock", "description"]
+    fieldnames = ["title", "price", "rating", "upc", "stock", "description", "category"]
     with open(filename, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
