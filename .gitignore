@@ -1,4 +1,5 @@
 .env
 books.csv
+scraper.log
 __pycache__/
 *.pyc

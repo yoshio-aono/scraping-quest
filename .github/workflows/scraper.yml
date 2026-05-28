@@ -1,0 +1,37 @@
+name: Daily Book Scraper
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 毎日 UTC 00:00 = JST 09:00
+  workflow_dispatch:        # GitHub画面から手動実行も可能
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: コードをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存ライブラリをインストール
+        run: pip install -r requirements.txt
+
+      - name: スクレイパーを実行
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scraper.py
+
+      - name: ログをアーティファクトとして保存
+        if: always()   # 失敗時もログをアップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-log-${{ github.run_id }}
+          path: scraper.log
+          retention-days: 30
